@@ -5,6 +5,7 @@
 - Student ID: `my1322`
 - Leaderboard Name (<=20 chars): `my1322_pcl2026`
 - GitHub/GitLab Repository Link (clickable): [PeterYang-niubidehen/nlp_cw](https://github.com/PeterYang-niubidehen/nlp_cw)
+- Report format note: This report was written in Markdown and exported to PDF.
 
 ---
 
