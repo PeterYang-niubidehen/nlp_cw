@@ -17,6 +17,12 @@ def parse_args() -> argparse.Namespace:
         default=Path("outputs/dev_predictions_detailed.csv"),
         help="CSV produced by scripts/train_and_predict.py",
     )
+    parser.add_argument(
+        "--score-col",
+        type=str,
+        default="auto",
+        help="Column used as confidence score. Use 'auto' to prefer score, then prob_pos.",
+    )
     parser.add_argument("--reports-dir", type=Path, default=Path("reports"))
     parser.add_argument("--figures-dir", type=Path, default=Path("figures"))
     return parser.parse_args()
@@ -33,10 +39,22 @@ def main() -> None:
         )
 
     df = pd.read_csv(args.dev_details)
-    required = {"y_true", "y_pred", "text", "score"}
+    required = {"y_true", "y_pred", "text"}
     missing = required.difference(df.columns)
     if missing:
         raise ValueError(f"Missing columns in dev details file: {missing}")
+
+    if args.score_col == "auto":
+        if "score" in df.columns:
+            score_col = "score"
+        elif "prob_pos" in df.columns:
+            score_col = "prob_pos"
+        else:
+            raise ValueError("No score column found. Expected either 'score' or 'prob_pos'.")
+    else:
+        score_col = args.score_col
+        if score_col not in df.columns:
+            raise ValueError(f"Requested --score-col '{score_col}' not found in CSV columns.")
 
     y_true = df["y_true"].astype(int)
     y_pred = df["y_pred"].astype(int)
@@ -58,8 +76,8 @@ def main() -> None:
     fn = df[(df["y_true"] == 1) & (df["y_pred"] == 0)].copy()
 
     # Rank high-confidence mistakes first.
-    fp["mistake_strength"] = fp["score"]
-    fn["mistake_strength"] = -fn["score"]
+    fp["mistake_strength"] = fp[score_col]
+    fn["mistake_strength"] = -fn[score_col]
 
     fp = fp.sort_values("mistake_strength", ascending=False)
     fn = fn.sort_values("mistake_strength", ascending=False)
@@ -73,7 +91,7 @@ def main() -> None:
         "true=" + score_plot_df["y_true"].astype(str) + ",pred=" + score_plot_df["y_pred"].astype(str)
     )
     plt.figure(figsize=(8, 5))
-    sns.kdeplot(data=score_plot_df, x="score", hue="group", fill=True, common_norm=False, alpha=0.3)
+    sns.kdeplot(data=score_plot_df, x=score_col, hue="group", fill=True, common_norm=False, alpha=0.3)
     plt.title("Decision Score Distribution by Outcome Group")
     plt.tight_layout()
     plt.savefig(args.figures_dir / "score_distribution_by_outcome.png", dpi=200)
@@ -87,6 +105,7 @@ def main() -> None:
         f"- Recall (PCL=1): {recall:.4f}",
         f"- False Positives: {len(fp)}",
         f"- False Negatives: {len(fn)}",
+        f"- Score Column: {score_col}",
         "",
         "## Error Analysis",
         "- Inspect false_positives_top50.csv for cases where the model over-detects PCL.",

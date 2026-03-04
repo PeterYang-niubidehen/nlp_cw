@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+.conda-pcl/
 .env
 .DS_Store
 .ipynb_checkpoints/

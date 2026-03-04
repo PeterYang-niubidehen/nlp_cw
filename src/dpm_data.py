@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 import urllib.request
 from dataclasses import dataclass
@@ -64,97 +65,121 @@ def ensure_data(root_dir: Path) -> DataPaths:
     )
 
 
-def _clean_text(text: str) -> str:
-    text = text.replace("\n", " ").replace("\t", " ").strip()
+def _clean_text(text: object) -> str:
+    if text is None or (isinstance(text, float) and pd.isna(text)):
+        return ""
+    text = str(text).replace("\n", " ").replace("\t", " ").strip()
     text = re.sub(r"\s+", " ", text)
     return text
 
 
 def parse_main_training_file(path: Path) -> pd.DataFrame:
     """
-    Parses entries like:
-    1 @@12345 keyword us Some text ... 0
-    2 @@67890 keyword gb Another text ... 1
+    Parse the main training file (6 tab-separated fields per data row).
 
-    The source format is irregular in line breaks, so regex over full text is
-    safer than strict TSV parsing.
+    File contains 3 disclaimer lines at top; we keep only rows matching:
+    - numeric record_id
+    - article id formatted as @@<digits>
+    - raw_label in [0, 4]
     """
-    content = path.read_text(encoding="utf-8", errors="ignore")
-
-    pattern = re.compile(
-        r"(?ms)\s*(\d+)\s+@@(\d+)\s+(\S+)\s+(\S+)\s+(.*?)\s+([0-4])\s*(?=(?:\d+\s+@@\d+\s+\S+\s+\S+)|\Z)"
+    columns = ["record_id", "article_id", "keyword", "country", "text", "raw_label"]
+    raw_df = pd.read_csv(
+        path,
+        sep="\t",
+        header=None,
+        names=columns,
+        engine="python",
+        on_bad_lines="skip",
     )
 
-    rows = []
-    for record_id, par_id, keyword, country, text, raw_label in pattern.findall(content):
-        rows.append(
-            {
-                "record_id": int(record_id),
-                "par_id": int(par_id),
-                "keyword": keyword,
-                "country": country,
-                "text": _clean_text(text),
-                "raw_label": int(raw_label),
-                "binary_label": 1 if int(raw_label) >= 2 else 0,
-            }
-        )
+    raw_label_numeric = pd.to_numeric(raw_df["raw_label"], errors="coerce")
+    valid_mask = (
+        raw_df["record_id"].astype(str).str.fullmatch(r"\d+")
+        & raw_df["article_id"].astype(str).str.fullmatch(r"@@\d+")
+        & raw_label_numeric.notna()
+        & raw_label_numeric.between(0, 4)
+    )
+    df = raw_df.loc[valid_mask].copy()
 
-    if not rows:
-        raise ValueError(
-            f"Could not parse records from {path}. Please check file contents."
-        )
+    if df.empty:
+        raise ValueError(f"Could not parse records from {path}. Please check file contents.")
 
-    df = pd.DataFrame(rows)
-    df = df.drop_duplicates(subset=["par_id"], keep="first")
+    df["record_id"] = df["record_id"].astype(int)
+    df["article_id"] = (
+        df["article_id"].astype(str).str.replace("@@", "", regex=False).astype(int)
+    )
+    df["text"] = df["text"].astype(str).map(_clean_text)
+    df["raw_label"] = pd.to_numeric(df["raw_label"], errors="raise").astype(int)
+    df["binary_label_raw"] = (df["raw_label"] >= 2).astype(int)
+
     return df
 
 
 def parse_split_file(path: Path) -> pd.DataFrame:
     """
-    Robustly parses files where par_id,label pairs may appear one per line,
-    many per line, or with optional header text.
-    """
-    content = path.read_text(encoding="utf-8", errors="ignore")
-    pairs = re.findall(r"(\d+)\s*,\s*([01])", content)
-    if not pairs:
-        raise ValueError(f"Could not parse par_id,label pairs from {path}")
+    Parse split file of shape:
+    par_id,label
+    4341,"[1, 0, 0, 1, 0, 0, 0]"
 
-    df = pd.DataFrame(pairs, columns=["par_id", "label"]).astype(int)
-    df = df.drop_duplicates(subset=["par_id"], keep="last")
-    return df
+    Here `par_id` maps to `record_id` in the main training file.
+    """
+    df = pd.read_csv(path)
+    required_cols = {"par_id", "label"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(f"Expected columns {required_cols} in {path}, found {set(df.columns)}")
+
+    def to_binary(label_value: object) -> int:
+        # Supports either scalar 0/1 labels or multi-label vectors like "[1,0,0,1,0,0,0]".
+        if pd.isna(label_value):
+            return 0
+        if isinstance(label_value, (int, float)):
+            return int(float(label_value) > 0)
+
+        label_text = str(label_value).strip()
+        if label_text in {"0", "1"}:
+            return int(label_text)
+
+        try:
+            parsed = ast.literal_eval(label_text)
+        except (ValueError, SyntaxError):
+            bits = [int(x) for x in re.findall(r"[01]", label_text)]
+            return int(any(bits))
+
+        if isinstance(parsed, (list, tuple)):
+            return int(any(int(x) for x in parsed))
+        if isinstance(parsed, (int, float)):
+            return int(float(parsed) > 0)
+        return 0
+
+    out = pd.DataFrame()
+    out["record_id"] = pd.to_numeric(df["par_id"], errors="raise").astype(int)
+    out["binary_label"] = df["label"].map(to_binary).astype(int)
+    out["label_raw"] = df["label"].astype(str)
+    out = out.drop_duplicates(subset=["record_id"], keep="last")
+    return out
 
 
 def parse_test_file(path: Path) -> pd.DataFrame:
     """
-    Parses entries like:
-    t_0 @@7258997 vulnerable us Some text ...
-    t_1 @@16397324 hopeless ng More text ...
-
-    Records can span lines; parse with regex over the full file.
+    Parse official test TSV:
+    t_0  @@7258997  vulnerable  us  <text>
     """
-    content = path.read_text(encoding="utf-8", errors="ignore")
-    pattern = re.compile(
-        r"(?ms)\s*(t_\d+)\s+@@(\d+)\s+(\S+)\s+(\S+)\s+(.*?)\s*(?=(?:t_\d+\s+@@\d+\s+\S+\s+\S+)|\Z)"
+    columns = ["sample_id", "article_id", "keyword", "country", "text"]
+    df = pd.read_csv(path, sep="\t", header=None, names=columns, engine="python")
+
+    valid_mask = (
+        df["sample_id"].astype(str).str.fullmatch(r"t_\d+")
+        & df["article_id"].astype(str).str.fullmatch(r"@@\d+")
     )
+    df = df.loc[valid_mask].copy()
 
-    rows = []
-    for sample_id, par_id, keyword, country, text in pattern.findall(content):
-        rows.append(
-            {
-                "sample_id": sample_id,
-                "par_id": int(par_id),
-                "keyword": keyword,
-                "country": country,
-                "text": _clean_text(text),
-            }
-        )
+    if df.empty:
+        raise ValueError(f"Could not parse test records from {path}. Please check file contents.")
 
-    if not rows:
-        raise ValueError(
-            f"Could not parse test records from {path}. Please check file contents."
-        )
-
-    df = pd.DataFrame(rows)
+    df["article_id"] = (
+        df["article_id"].astype(str).str.replace("@@", "", regex=False).astype(int)
+    )
+    df["text"] = df["text"].astype(str).map(_clean_text)
     return df
 
 
@@ -166,8 +191,16 @@ def load_official_splits(data_root: Path) -> tuple[pd.DataFrame, pd.DataFrame, p
     dev_split = parse_split_file(paths.dev_split)
     test_df = parse_test_file(paths.test_main)
 
-    train_df = train_split.merge(all_train[["par_id", "text"]], on="par_id", how="left")
-    dev_df = dev_split.merge(all_train[["par_id", "text"]], on="par_id", how="left")
+    train_df = train_split.merge(
+        all_train[["record_id", "article_id", "keyword", "country", "text"]],
+        on="record_id",
+        how="left",
+    )
+    dev_df = dev_split.merge(
+        all_train[["record_id", "article_id", "keyword", "country", "text"]],
+        on="record_id",
+        how="left",
+    )
 
     train_missing = train_df["text"].isna().sum()
     dev_missing = dev_df["text"].isna().sum()
@@ -176,9 +209,6 @@ def load_official_splits(data_root: Path) -> tuple[pd.DataFrame, pd.DataFrame, p
             "Missing text after merge with split files: "
             f"train_missing={train_missing}, dev_missing={dev_missing}"
         )
-
-    train_df = train_df.rename(columns={"label": "binary_label"})
-    dev_df = dev_df.rename(columns={"label": "binary_label"})
 
     return train_df, dev_df, test_df
 

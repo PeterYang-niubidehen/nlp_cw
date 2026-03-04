@@ -37,14 +37,45 @@ You also get:
 - `reports/LOCAL_EVALUATION.md`
 - figures under `figures/`
 
-## 3) Important Coursework Notes
+## 3) Transformer Upgrade (Recommended)
+
+If you want stronger performance, use the conda environment and transformer script:
+
+```bash
+export CONDA_PKGS_DIRS=/tmp/conda-pkgs
+source "$(conda info --base)/etc/profile.d/conda.sh"
+conda create -y -p './.conda-pcl' python=3.10 pip
+conda activate './.conda-pcl'
+pip install -r requirements.txt
+pip install torch transformers datasets accelerate evaluate sentencepiece
+```
+
+Run one training pass (this overwrites `BestModel/dev.txt` and `BestModel/test.txt`):
+
+```bash
+export XDG_CACHE_HOME=/tmp
+export HF_HOME=/tmp/hf-cache
+export TRANSFORMERS_CACHE=/tmp/hf-cache
+python scripts/train_roberta.py \
+  --model-name distilroberta-base \
+  --epochs 1 \
+  --train-batch-size 8 \
+  --eval-batch-size 16 \
+  --max-length 256 \
+  --use-meta-tokens \
+  --save-bestmodel \
+  --output-dir outputs/roberta_distil \
+  --models-dir models/roberta_distil
+```
+
+## 4) Important Coursework Notes
 
 - `dev.txt` and `test.txt` must contain one prediction (`0` or `1`) per line.
 - Keep the same row order as official dev/test files.
 - Add a working public GitHub/GitLab link on the report front page.
 - Keep a `BestModel/` folder in the repository.
 
-## 4) Project Structure
+## 5) Project Structure
 
 ```text
 .
@@ -57,6 +88,7 @@ You also get:
 ├── scripts/
 │   ├── run_all.sh
 │   ├── train_and_predict.py
+│   ├── train_roberta.py
 │   ├── run_eda.py
 │   └── error_analysis.py
 ├── src/
@@ -65,7 +97,7 @@ You also get:
 └── README.md
 ```
 
-## 5) Commands (Manual)
+## 6) Commands (Manual)
 
 ```bash
 export PYTHONPATH=.
@@ -77,7 +109,7 @@ python scripts/run_eda.py --data-root data --figures-dir figures --reports-dir r
 python scripts/error_analysis.py --dev-details outputs/dev_predictions_detailed.csv --reports-dir reports --figures-dir figures
 ```
 
-## 6) Push to GitHub and Create Link
+## 7) Push to GitHub and Create Link
 
 ### Option A: already have an empty GitHub repo
 
@@ -101,7 +133,7 @@ gh repo create pcl-coursework-2026 --public --source=. --remote=origin --push
 
 Then use the resulting repo URL on the report front page.
 
-## 7) Troubleshooting
+## 8) Troubleshooting
 
 - If data download fails, manually place these files in `data/`:
   - `dontpatronizeme_pcl.tsv`

@@ -1,0 +1,10 @@
+model=distilroberta-base
+dev_f1=0.568675
+threshold=0.32676768
+max_length=256
+epochs=2.0
+train_batch_size=8
+learning_rate=1.5e-05
+use_meta_tokens=True
+model_checkpoint_path=/Users/molan/Documents/New project/models/roberta_distil_e2/checkpoint_best
+notes=transformer fine-tuning with class-weighted loss and threshold tuning (improved run)
